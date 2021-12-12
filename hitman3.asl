@@ -1,3 +1,11 @@
+/*
+    This script tracks Hitman 3 ingame time in LiveSplit.
+    * It does NOT auto-split
+    * It tracks time across levels and level restarts
+    * It pauses in menus, including inventory
+    * It does not pause at the end-level cutscene, only at the loading screen,
+      so you should immediately skip the end-level cutscene.
+*/
 state("HITMAN3")
 {
     // Total ingame time since start of level (including starting cutscene)
@@ -9,6 +17,7 @@ state("HITMAN3")
     float CST: 0x02FF4CA8, 0x898;
     
     // Alternate ingame time that starts after cutscene. Works for everything except start of Nightcall.
+    // Does NOT stop at end-level cutscene, only when next screen starts loading.
     float ALT_IGT: 0x03B21A40, 0x108;
 }
 

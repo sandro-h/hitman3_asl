@@ -1,3 +1,5 @@
-# hitman3_asl
+# Hitman 3 ingame time tracker
 
-Auto splitter script for Hitman 3 to track ingame time. It **does not** actually auto-split, just sync up LiveSplit with the ingame timer (across levels).
+LiveSplit AutoSplitter script to track Hitman 3 ingame time.
+
+See header in [hitman3.asl](hitman3.asl) for more info.
