@@ -9,16 +9,19 @@
 state("HITMAN3")
 {
     // Total ingame time since start of level (including starting cutscene)
-    float IGT: 0x0310C778, 0x108;
+    // 48 8B 0D ? ? ? ? 48 89 15 ? ? ? ? 48 89 05 ? ? ? ?
+    float IGT: 0x0310C8F8, 0x108;
 
     // Time spent in starting cutscene or other scenes without player control, e.g. walking through curtain in Dubai.
     // Starts counting along with IGT, but pauses once cutscene ends. When player loses control in game, it jumps
     // to the value of IGT, counts again and pauses when player regains control.
-    float CST: 0x0308EAC8, 0x898;
+    // 48 8B 0D ? ? ? ? F3 0F 10 0D ? ? ? ? 48 81 C1 ? ? ? ? 48 8B 7C 24 ?
+    float CST: 0x0308EC48, 0x898;
     
     // Alternate ingame time that starts after cutscene. Works for everything except start of Nightcall.
     // Does NOT stop at end-level cutscene, only when next screen starts loading.
-    float ALT_IGT: 0x03BF8728, 0x108;
+    // 48 8B 1D ? ? ? ? 48 8D 4D ? 0F 29 B4 24 ? ? ? ?
+    float ALT_IGT: 0x03BF88B0, 0x108;
 }
 
 startup {
