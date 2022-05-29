@@ -77,6 +77,7 @@ init
 
     //Version check if needed in future to change signatures
     //
+	
     /*	
 	var versionInfo = FileVersionInfo.GetVersionInfo(mainModule.FileName);
 	if(versionInfo.FileVersion == "3.110.1.0")
@@ -157,7 +158,11 @@ init
     //
     // Fix me please?
     //
-
+	
+	
+	//Time in game is stored as binary microseconds in ulong
+	//
+	
     vars.currentTime = (ulong)0;
     vars.currentHudMissionTimer = (ulong)0;
     vars.currentMissionTime = (ulong)0;
@@ -321,13 +326,6 @@ reset
     return false;
 }
 
-split
-{
-    //Split when exited mission
-    //
-    return settings.SplitEnabled && vars.currentHudMissionTimer > 0 && vars.oldGateExited == false && vars.currentGateExited == true;
-}
-
 isLoading
 {
     return true;
@@ -349,8 +347,20 @@ gameTime
         if ((vars.oldGateExited == false && vars.currentGateExited == true) ||
             (vars.currentMissionTime == 0 && vars.currentHudMissionTimer > 0))
         {
+			//We use bit operation to convert it to seconds, it sets first 20 bits to 0
+			//
             vars.totalIGT &= ~((ulong)0xFFFFF);
         }
     }
+	
+	//We have to convert microseconds to seconds since it's binary format we have to use 2^-20 (0.00000095367432) // decimal 10^-6, 1000000μs is 1s
+	//
     return TimeSpan.FromSeconds((double)vars.totalIGT * 0.00000095367432);
+}
+
+split
+{
+    //Split when exited mission
+    //
+    return settings.SplitEnabled && vars.currentHudMissionTimer > 0 && vars.oldGateExited == false && vars.currentGateExited == true;
 }
