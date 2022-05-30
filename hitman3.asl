@@ -43,39 +43,19 @@ state("HITMAN3")
 
 init
 {
-    Func<string, List<byte>> convertSigToByteArray = (sig) =>
-    {
-        List<byte> bytes = new List<byte>();
-
-        var stringBytes = sig.Split(' ');
-
-        foreach (var stringByte in stringBytes)
-        {
-            if (stringByte.Contains("?"))
-            {
-                bytes.Add(0xFF);
-                continue;
-            }
-
-            bytes.Add(Convert.ToByte(stringByte, 16));
-        }
-
-        return bytes;
-    };
-
     var mainModule = modules.First();
     var baseAddress = mainModule.BaseAddress;
 
-    var signaturesList = new[]
+    var signaturesList = new List<Tuple<string, string, string, int>>()
     {
-        new { name = "gateExited", type = "offset", read = 0x2, sig = convertSigToByteArray("C6 85 ? ? ? ? ? 48 8B 85 ? ? ? ? 48 85 C0"), state = new int[] { 0, 0, 0 }},
-        new { name = "metadataLocation", type = "offset", read = 0x3, sig = convertSigToByteArray("48 89 9E ? ? ? ? 49 8B CD"), state = new int[] { 0, 0, 0 }},
-        new { name = "hudMissionTimeController", type = "pointer", read = 0x3, sig = convertSigToByteArray("48 8B 1D ? ? ? ? 48 85 DB 0F 84 ? ? ? ? 48 8B 43 28"), state = new int[] { 0, 0, 0 }},
-        new { name = "contractsManager", type = "pointer", read = 0x3, sig = convertSigToByteArray("48 8D 0D ? ? ? ? E8 ? ? ? ? 48 8D 4D E7 E8 ? ? ? ? F7 45 ? ? ? ? ?"), state = new int[] { 0, 0, 0 }},
-        new { name = "gameTime", type = "pointer", read = 0x3, sig = convertSigToByteArray("4C 89 0D ? ? ? ? EB 5C"), state = new int[] { 0, 0, 0 }},
-        new { name = "onSaStatusUpdate", type = "function", read = 0x0, sig = convertSigToByteArray("40 53 48 83 EC 20 48 8B D9 E8 ? ? ? ? 84 C0 74 11 48 8B CB"), state = new int[] { 0, 0, 0 }},
-        new { name = "onKillEventObjectList", type = "pointer", read = 0x3, sig = convertSigToByteArray("48 8D 0D ? ? ? ? 0F 11 4D E0 E8 ? ? ? ? 89 7D E8 48 8D 05 ? ? ? ? 48 89 45 E0 48 8D 55 E0"), state = new int[] { 0, 0, 0 }}
-    }.ToList();
+        new Tuple<string, string, string, int>("gateExited", "offset", "C6 85 ?? ?? ?? ?? ?? 48 8B 85 ?? ?? ?? ?? 48 85 C0", 0x2),
+        new Tuple<string, string, string, int>("metadataLocation", "offset", "48 89 9E ?? ?? ?? ?? 49 8B CD", 0x3),
+        new Tuple<string, string, string, int>("hudMissionTimeController", "pointer", "48 8B 1D ?? ?? ?? ?? 48 85 DB 0F 84 ?? ?? ?? ?? 48 8B 43 28", 0x3),
+        new Tuple<string, string, string, int>("contractsManager", "pointer", "48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8D 4D E7 E8 ?? ?? ?? ?? F7 45", 0x3),
+        new Tuple<string, string, string, int>("gameTime", "pointer", "4C 89 0D ?? ?? ?? ?? EB 5C", 0x3),
+        new Tuple<string, string, string, int>("onSaStatusUpdate", "function", "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 84 C0 74 11 48 8B CB", 0x0),
+        new Tuple<string, string, string, int>("onKillEventObjectList", "pointer", "48 8D 0D ?? ?? ?? ?? 0F 11 4D E0 E8 ?? ?? ?? ?? 89 7D E8 48 8D 05 ?? ?? ?? ?? 48 89 45 E0 48 8D 55 E0", 0x3)
+    };
 
     //Version check if needed in future to change signatures
     //
@@ -96,62 +76,34 @@ init
     var textVirtualSize = memory.ReadValue<int>(textSectionBase + 0x08);
     var textVirtualAddress = memory.ReadValue<int>(textSectionBase + 0x0C);
 
-    var textSectionData = memory.ReadBytes(baseAddress + textVirtualAddress, textVirtualSize);
-
-    //We probably could use internaly class SignatureScanner but it dosen't support multiple signatures at the same time
-    //
-
-    for (var i = 0; i < textSectionData.Length; i++)
-    {
-        bool finish = true;
-
-        foreach (var signature in signaturesList)
-        {
-            if (signature.state[0] == 1)
-                continue;
-
-            finish = false;
-
-            var currentIndex = signature.state[1];
-
-            if (signature.sig[currentIndex] == 0xFF
-            || signature.sig[currentIndex] == textSectionData[i])
-            {
-                if ((currentIndex + 1) == signature.sig.Count)
-                {
-                    var sigAddress = baseAddress + textVirtualAddress + (i - currentIndex);
-
-                    if (signature.type == "offset")
-                    {
-                        signature.state[2] = memory.ReadValue<int>(sigAddress + signature.read);
-                    }
-                    else if (signature.type == "pointer")
-                    {
-                        signature.state[2] = memory.ReadValue<int>(sigAddress + signature.read) + textVirtualAddress + (i - currentIndex) + 0x7;
-                    }
-                    else if (signature.type == "function")
-                    {
-                        signature.state[2] = textVirtualAddress + (i - currentIndex);
-                    }
-
-                    signature.state[0] = 1;
-                }
-                signature.state[1]++;
-                continue;
-            }
-
-            signature.state[1] = 0;
-        }
-
-        if (finish)
-            break;
-    }
-
     var gameAddresses = new Dictionary<string, int>();
+
+    var scanner = new SignatureScanner(game, IntPtr.Add(baseAddress, textVirtualAddress), textVirtualSize);
+    var sigScanTarget = new SigScanTarget();
 
     foreach (var signature in signaturesList)
     {
-        gameAddresses[signature.name] = signature.state[2];
+        sigScanTarget.AddSignature(signature.Item3);
+    }
+
+    var resultList = scanner.ScanAll(sigScanTarget).ToList();
+
+    for (var i = 0; i < resultList.Count; i++)
+    {
+        var signature = signaturesList[i];
+        var scanResult = resultList[i];
+        if (signature.Item2 == "offset")
+        {
+            gameAddresses[signature.Item1] = memory.ReadValue<int>(scanResult + signature.Item4);
+        }
+        else if (signature.Item2 == "pointer")
+        {
+            gameAddresses[signature.Item1] = memory.ReadValue<int>(scanResult + signature.Item4) + (int)((ulong)scanResult - (ulong)baseAddress) + 0x7;
+        }
+        else if (signature.Item2 == "function")
+        {
+            gameAddresses[signature.Item1] = (int)((ulong)scanResult - (ulong)baseAddress);
+        }
     }
 
     vars.timePointer = new DeepPointer(gameAddresses["gameTime"]);
@@ -167,7 +119,6 @@ init
     //
     // Fix me please?
     //
-
 
     //Time in game is stored as binary microseconds in ulong
     //
