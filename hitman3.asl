@@ -72,12 +72,14 @@ init
         new { name = "metadataLocation", type = "offset", read = 0x3, sig = convertSigToByteArray("48 89 9E ? ? ? ? 49 8B CD"), state = new int[] { 0, 0, 0 }},
         new { name = "hudMissionTimeController", type = "pointer", read = 0x3, sig = convertSigToByteArray("48 8B 1D ? ? ? ? 48 85 DB 0F 84 ? ? ? ? 48 8B 43 28"), state = new int[] { 0, 0, 0 }},
         new { name = "contractsManager", type = "pointer", read = 0x3, sig = convertSigToByteArray("48 8D 0D ? ? ? ? E8 ? ? ? ? 48 8D 4D E7 E8 ? ? ? ? F7 45 ? ? ? ? ?"), state = new int[] { 0, 0, 0 }},
-        new { name = "gameTime", type = "pointer", read = 0x3, sig = convertSigToByteArray("4C 89 0D ? ? ? ? EB 5C"), state = new int[] { 0, 0, 0 }}
+        new { name = "gameTime", type = "pointer", read = 0x3, sig = convertSigToByteArray("4C 89 0D ? ? ? ? EB 5C"), state = new int[] { 0, 0, 0 }},
+        new { name = "onSaStatusUpdate", type = "function", read = 0x0, sig = convertSigToByteArray("40 53 48 83 EC 20 48 8B D9 E8 ? ? ? ? 84 C0 74 11 48 8B CB"), state = new int[] { 0, 0, 0 }},
+        new { name = "onKillEventObjectList", type = "pointer", read = 0x3, sig = convertSigToByteArray("48 8D 0D ? ? ? ? 0F 11 4D E0 E8 ? ? ? ? 89 7D E8 48 8D 05 ? ? ? ? 48 89 45 E0 48 8D 55 E0"), state = new int[] { 0, 0, 0 }}
     }.ToList();
 
     //Version check if needed in future to change signatures
     //
-	
+
     /*	
 	var versionInfo = FileVersionInfo.GetVersionInfo(mainModule.FileName);
 	if(versionInfo.FileVersion == "3.110.1.0")
@@ -127,6 +129,10 @@ init
                     {
                         signature.state[2] = memory.ReadValue<int>(sigAddress + signature.read) + textVirtualAddress + (i - currentIndex) + 0x7;
                     }
+                    else if (signature.type == "function")
+                    {
+                        signature.state[2] = textVirtualAddress + (i - currentIndex);
+                    }
 
                     signature.state[0] = 1;
                 }
@@ -154,25 +160,30 @@ init
     vars.gateExitedPointer = new DeepPointer(gameAddresses["contractsManager"] + gameAddresses["gateExited"]);
     vars.metadataLocationPointer = new DeepPointer(gameAddresses["contractsManager"] + gameAddresses["metadataLocation"], 0x00);
 
+    vars.onSaStatusUpdateOff = gameAddresses["onSaStatusUpdate"];
+    vars.onKillEventObjectListOff = gameAddresses["onKillEventObjectList"];
+
     //I don't know how to modify pointers in state so will create my own variables
     //
     // Fix me please?
     //
-	
-	
-	//Time in game is stored as binary microseconds in ulong
-	//
-	
+
+
+    //Time in game is stored as binary microseconds in ulong
+    //
+
     vars.currentTime = (ulong)0;
     vars.currentHudMissionTimer = (ulong)0;
     vars.currentMissionTime = (ulong)0;
     vars.currentGateExited = false;
+    vars.currentSilentAssassin = false;
     vars.currentMetadataLocation = "";
 
     vars.oldTime = (ulong)0;
     vars.oldHudMissionTimer = (ulong)0;
     vars.oldMissionTime = (ulong)0;
     vars.oldGateExited = false;
+    vars.oldSilentAssassin = false;
     vars.oldMetadataLocation = "";
 }
 
@@ -183,6 +194,49 @@ update
     vars.oldMissionTime = vars.currentMissionTime;
     vars.oldGateExited = vars.currentGateExited;
     vars.oldMetadataLocation = vars.currentMetadataLocation;
+    vars.oldSilentAssassin = vars.currentSilentAssassin;
+
+    //There is no static pointer to HudSilentAssassinOptionController but we can use static list for on kill event which contains HudSilentAssassinOptionController
+    //
+    // That list is a simple std::vector with some struct, size of that struct is 0x20
+    //	off 0x00 - event function handler
+    //  off 0x18 - pointer to class
+    //
+
+    vars.currentSilentAssassin = false;
+
+    var baseAddress = modules.First().BaseAddress;
+    var addressFinal = IntPtr.Add(baseAddress, (int)vars.onKillEventObjectListOff);
+    var listHeaderData = game.ReadBytes(addressFinal, 0x10);
+    var listStart = BitConverter.ToUInt64(listHeaderData, 0x0);
+    var listEnd = BitConverter.ToUInt64(listHeaderData, 0x8);
+    var itemsCount = (int)(listEnd - listStart) / 0x20;
+    var listData = game.ReadBytes((IntPtr)listStart, (int)(listEnd - listStart));
+
+    for (var i = 0; i < itemsCount; i++)
+    {
+        var callbackFunction = BitConverter.ToUInt64(listData, (i * 0x20) + 0x00);
+        if (callbackFunction != (ulong)IntPtr.Add(baseAddress, (int)vars.onSaStatusUpdateOff))
+            continue;
+
+        var hudSilentAssassinOptionController = BitConverter.ToUInt64(listData, (i * 0x20) + 0x18);
+        if (hudSilentAssassinOptionController == 0)
+            continue;
+
+        //0x40 - spotted by camera should be false
+        //0x41 - unnoticed spotted be true
+        //0x42 - killed non target should be false
+        //0x43 - body not found should be true (it's my guess so could be wrong)
+
+        var assassinStatus = game.ReadBytes((IntPtr)(hudSilentAssassinOptionController + 0x40), 0x4);
+
+        vars.currentSilentAssassin = assassinStatus[0] == 0x00
+                                    && assassinStatus[1] == 0x01
+                                    && assassinStatus[2] == 0x00
+                                    && assassinStatus[3] == 0x01;
+
+        break;
+    }
 
     vars.currentTime = vars.timePointer.Deref<ulong>(game);
     vars.currentHudMissionTimer = vars.hudMissionTimeControllerPointer.Deref<ulong>(game);
@@ -200,6 +254,7 @@ startup
     vars.disableReset = true;
     refreshRate = 20;
 
+    settings.Add("splitassassin", true, "Split mission only when SilentAssassin");
     settings.Add("useseconds", true, "Fix timer to seconds, after exit/restart mission");
 
     settings.Add("autorestart", true, "Start/Restart timer on mission");
@@ -347,14 +402,14 @@ gameTime
         if ((vars.oldGateExited == false && vars.currentGateExited == true) ||
             (vars.currentMissionTime == 0 && vars.currentHudMissionTimer > 0))
         {
-			//We use bit operation to convert it to seconds, it sets first 20 bits to 0
-			//
+            //We use bit operation to convert it to seconds, it sets first 20 bits to 0
+            //
             vars.totalIGT &= ~((ulong)0xFFFFF);
         }
     }
-	
-	//We have to convert microseconds to seconds since it's binary format we have to use 2^-20 (0.00000095367432) // decimal 10^-6, 1000000μs is 1s
-	//
+
+    //We have to convert microseconds to seconds since it's binary format we have to use 2^-20 (0.00000095367432) // decimal 10^-6, 1000000μs is 1s
+    //
     return TimeSpan.FromSeconds((double)vars.totalIGT * 0.00000095367432);
 }
 
@@ -362,5 +417,5 @@ split
 {
     //Split when exited mission
     //
-    return settings.SplitEnabled && vars.currentHudMissionTimer > 0 && vars.oldGateExited == false && vars.currentGateExited == true;
+    return settings.SplitEnabled && (!settings["splitassassin"] || vars.currentSilentAssassin) && vars.currentHudMissionTimer > 0 && vars.oldGateExited == false && vars.currentGateExited == true;
 }
