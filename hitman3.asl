@@ -246,16 +246,25 @@ update
         vars.currentMissionTime = (ulong)0;
     vars.currentGateExited = vars.gateExitedPointer.Deref<bool>(game);
     vars.currentMetadataLocation = vars.metadataLocationPointer.DerefString(game, 255, "");
+
+    if (settings["unsplitrestart"] && vars.currentHudMissionTimer > 0 && vars.currentMissionTime == 0 && vars.lastSplitLocation == vars.currentMetadataLocation)
+    {
+        vars.timerModel.UndoSplit();
+        vars.lastSplitLocation = "";
+    }
 }
 
 startup
 {
     vars.totalIGT = (ulong)0;
     vars.disableReset = true;
+    vars.timerModel = new TimerModel { CurrentState = timer }; // to use the undo split function
+    vars.lastSplitLocation = "";
     refreshRate = 20;
 
     settings.Add("splitassassin", true, "Split mission only when SilentAssassin");
     settings.Add("useseconds", true, "Fix timer to seconds, after exit/restart mission");
+    settings.Add("unsplitrestart", false, "UndoSplit when starting the same mission");
 
     settings.Add("autorestart", true, "Start/Restart timer on mission");
     {
@@ -417,5 +426,10 @@ split
 {
     //Split when exited mission
     //
-    return settings.SplitEnabled && (!settings["splitassassin"] || vars.currentSilentAssassin) && vars.currentHudMissionTimer > 0 && vars.oldGateExited == false && vars.currentGateExited == true;
+    if (settings.SplitEnabled && (!settings["splitassassin"] || vars.currentSilentAssassin) && vars.currentHudMissionTimer > 0 && vars.oldGateExited == false && vars.currentGateExited == true)
+    {
+        vars.lastSplitLocation = vars.currentMetadataLocation;
+        return true;
+    }
+    return false;
 }
