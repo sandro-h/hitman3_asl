@@ -52,7 +52,7 @@ init
         new Tuple<string, string, string, int>("metadataLocation", "offset", "48 89 9E ?? ?? ?? ?? 49 8B CD", 0x3),
         new Tuple<string, string, string, int>("hudMissionTimeController", "pointer", "48 8B 1D ?? ?? ?? ?? 48 85 DB 0F 84 ?? ?? ?? ?? 48 8B 43 28", 0x3),
         new Tuple<string, string, string, int>("contractsManager", "pointer", "48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8D 4D E7 E8 ?? ?? ?? ?? F7 45", 0x3),
-        new Tuple<string, string, string, int>("gameTime", "pointer", "4C 89 0D ?? ?? ?? ?? EB 5C", 0x3),
+        new Tuple<string, string, string, int>("gameTime", "pointer", "48 03 15 ?? ?? ?? ?? F3 48 0F 2A C2", 0x3),
         new Tuple<string, string, string, int>("onSaStatusUpdate", "function", "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 84 C0 74 11 48 8B CB", 0x0),
         new Tuple<string, string, string, int>("onKillEventObjectList", "pointer", "48 8D 0D ?? ?? ?? ?? 0F 11 4D E0 E8 ?? ?? ?? ?? 89 7D E8 48 8D 05 ?? ?? ?? ?? 48 89 45 E0 48 8D 55 E0", 0x3)
     };
@@ -106,47 +106,22 @@ init
         }
     }
 
-    vars.timePointer = new DeepPointer(gameAddresses["gameTime"]);
-    vars.hudMissionTimeControllerPointer = new DeepPointer(gameAddresses["hudMissionTimeController"]);
-    vars.missionTimePointer = new DeepPointer(gameAddresses["hudMissionTimeController"], 0x40);
-    vars.gateExitedPointer = new DeepPointer(gameAddresses["contractsManager"] + gameAddresses["gateExited"]);
-    vars.metadataLocationPointer = new DeepPointer(gameAddresses["contractsManager"] + gameAddresses["metadataLocation"], 0x00);
+    //Time in game is stored as binary microseconds in ulong
+    //
+    vars.time = new MemoryWatcher<ulong>(new DeepPointer(gameAddresses["gameTime"]));
+    vars.hudMissionTimeController = new MemoryWatcher<ulong>(new DeepPointer(gameAddresses["hudMissionTimeController"]));
+    vars.missionTime = new MemoryWatcher<ulong>(new DeepPointer(gameAddresses["hudMissionTimeController"], 0x40));
+    vars.gateExited = new MemoryWatcher<bool>(new DeepPointer(gameAddresses["contractsManager"] + gameAddresses["gateExited"]));
+    vars.metadataLocation = new StringWatcher(new DeepPointer(gameAddresses["contractsManager"] + gameAddresses["metadataLocation"], 0x00), 255);
 
     vars.onSaStatusUpdateOff = gameAddresses["onSaStatusUpdate"];
     vars.onKillEventObjectListOff = gameAddresses["onKillEventObjectList"];
 
-    //I don't know how to modify pointers in state so will create my own variables
-    //
-    // Fix me please?
-    //
-
-    //Time in game is stored as binary microseconds in ulong
-    //
-
-    vars.currentTime = (ulong)0;
-    vars.currentHudMissionTimer = (ulong)0;
-    vars.currentMissionTime = (ulong)0;
-    vars.currentGateExited = false;
-    vars.currentSilentAssassin = false;
-    vars.currentMetadataLocation = "";
-
-    vars.oldTime = (ulong)0;
-    vars.oldHudMissionTimer = (ulong)0;
-    vars.oldMissionTime = (ulong)0;
-    vars.oldGateExited = false;
-    vars.oldSilentAssassin = false;
-    vars.oldMetadataLocation = "";
+    vars.silentAssassinStatus = false;
 }
 
 update
 {
-    vars.oldTime = vars.currentTime;
-    vars.oldHudMissionTimer = vars.currentHudMissionTimer;
-    vars.oldMissionTime = vars.currentMissionTime;
-    vars.oldGateExited = vars.currentGateExited;
-    vars.oldMetadataLocation = vars.currentMetadataLocation;
-    vars.oldSilentAssassin = vars.currentSilentAssassin;
-
     //There is no static pointer to HudSilentAssassinOptionController but we can use static list for on kill event which contains HudSilentAssassinOptionController
     //
     // That list is a simple std::vector with some struct, size of that struct is 0x20
@@ -154,7 +129,7 @@ update
     //  off 0x18 - pointer to class
     //
 
-    vars.currentSilentAssassin = false;
+    vars.silentAssassinStatus = false;
 
     var baseAddress = modules.First().BaseAddress;
     var addressFinal = IntPtr.Add(baseAddress, (int)vars.onKillEventObjectListOff);
@@ -181,7 +156,7 @@ update
 
         var assassinStatus = game.ReadBytes((IntPtr)(hudSilentAssassinOptionController + 0x40), 0x4);
 
-        vars.currentSilentAssassin = assassinStatus[0] == 0x00
+        vars.silentAssassinStatus = assassinStatus[0] == 0x00
                                     && assassinStatus[1] == 0x01
                                     && assassinStatus[2] == 0x00
                                     && assassinStatus[3] == 0x01;
@@ -189,16 +164,13 @@ update
         break;
     }
 
-    vars.currentTime = vars.timePointer.Deref<ulong>(game);
-    vars.currentHudMissionTimer = vars.hudMissionTimeControllerPointer.Deref<ulong>(game);
-    if (vars.currentHudMissionTimer > 0)
-        vars.currentMissionTime = vars.missionTimePointer.Deref<ulong>(game);
-    else
-        vars.currentMissionTime = (ulong)0;
-    vars.currentGateExited = vars.gateExitedPointer.Deref<bool>(game);
-    vars.currentMetadataLocation = vars.metadataLocationPointer.DerefString(game, 255, "");
+    vars.time.Update(game);
+    vars.hudMissionTimeController.Update(game);
+    vars.missionTime.Update(game);
+    vars.gateExited.Update(game);
+    vars.metadataLocation.Update(game);
 
-    if (settings["unsplitrestart"] && vars.currentHudMissionTimer > 0 && vars.currentMissionTime == 0 && vars.lastSplitLocation == vars.currentMetadataLocation)
+    if (settings["unsplitrestart"] && vars.hudMissionTimeController.Current > 0 && vars.missionTime.Current == 0 && vars.lastSplitLocation == vars.metadataLocation.Current)
     {
         vars.timerModel.UndoSplit();
         vars.lastSplitLocation = "";
@@ -289,10 +261,10 @@ start
 {
     if (settings.StartEnabled && settings["autorestart"])
     {
-        if (vars.currentMissionTime == 0)
+        if (vars.missionTime.Current == 0)
         {
             string settingKey = string.Empty;
-            if (vars.locationDescriptor.TryGetValue(vars.currentMetadataLocation, out settingKey))
+            if (vars.locationDescriptor.TryGetValue(vars.metadataLocation.Current, out settingKey))
             {
                 if (settings[settingKey])
                 {
@@ -315,7 +287,7 @@ start
 
 reset
 {
-    if (vars.currentMissionTime > 0)
+    if (vars.missionTime.Current > 0)
     {
         vars.disableReset = false;
     }
@@ -323,12 +295,12 @@ reset
     if (settings.ResetEnabled
         && vars.disableReset == false
         && settings["autorestart"]
-        && vars.currentGateExited == false
-        && vars.currentMissionTime == 0
-        && vars.currentHudMissionTimer > 0)
+        && vars.gateExited.Current == false
+        && vars.missionTime.Current == 0
+        && vars.hudMissionTimeController.Current > 0)
     {
         string settingKey = string.Empty;
-        if (vars.locationDescriptor.TryGetValue(vars.currentMetadataLocation, out settingKey))
+        if (vars.locationDescriptor.TryGetValue(vars.metadataLocation.Current, out settingKey))
         {
             if (settings[settingKey])
             {
@@ -348,19 +320,19 @@ isLoading
 
 gameTime
 {
-    if (vars.currentTime > vars.oldTime && vars.currentMissionTime > 0
-        && vars.oldTime >= vars.currentMissionTime
-        && vars.currentGateExited == false)
+    if (vars.time.Current > vars.time.Old && vars.missionTime.Current > 0
+        && vars.time.Old >= vars.missionTime.Current
+        && vars.gateExited.Current == false)
     {
-        vars.totalIGT += vars.currentTime - vars.oldTime;
+        vars.totalIGT += vars.time.Current - vars.time.Old;
     }
 
     if (settings["useseconds"])
     {
         //Fix timer to seconds only
         //
-        if ((vars.oldGateExited == false && vars.currentGateExited == true) ||
-            (vars.currentMissionTime == 0 && vars.currentHudMissionTimer > 0))
+        if ((vars.gateExited.Old == false && vars.gateExited.Current == true) ||
+            (vars.missionTime.Current == 0 && vars.hudMissionTimeController.Current > 0))
         {
             //We use bit operation to convert it to seconds, it sets first 20 bits to 0
             //
@@ -377,9 +349,9 @@ split
 {
     //Split when exited mission
     //
-    if (settings.SplitEnabled && (!settings["splitassassin"] || vars.currentSilentAssassin) && vars.currentHudMissionTimer > 0 && vars.oldGateExited == false && vars.currentGateExited == true)
+    if (settings.SplitEnabled && (!settings["splitassassin"] || vars.silentAssassinStatus) && vars.hudMissionTimeController.Current > 0 && vars.gateExited.Old == false && vars.gateExited.Current == true)
     {
-        vars.lastSplitLocation = vars.currentMetadataLocation;
+        vars.lastSplitLocation = vars.metadataLocation.Current;
         return true;
     }
     return false;
