@@ -54,7 +54,8 @@ init
         new Tuple<string, string, string, int>("contractsManager", "pointer", "48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8D 4D E7 E8 ?? ?? ?? ?? F7 45", 0x3),
         new Tuple<string, string, string, int>("gameTime", "pointer", "48 03 15 ?? ?? ?? ?? F3 48 0F 2A C2", 0x3),
         new Tuple<string, string, string, int>("onSaStatusUpdate", "function", "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 84 C0 74 11 48 8B CB", 0x0),
-        new Tuple<string, string, string, int>("onKillEventObjectList", "pointer", "48 8D 0D ?? ?? ?? ?? 0F 11 4D E0 E8 ?? ?? ?? ?? 89 7D E8 48 8D 05 ?? ?? ?? ?? 48 89 45 E0 48 8D 55 E0", 0x3)
+        new Tuple<string, string, string, int>("onKillEventObjectList", "pointer", "48 8D 0D ?? ?? ?? ?? 0F 11 4D E0 E8 ?? ?? ?? ?? 89 7D E8 48 8D 05 ?? ?? ?? ?? 48 89 45 E0 48 8D 55 E0", 0x3),
+        new Tuple<string, string, string, int>("contractsEventEntityList", "pointer", "48 8D 0D ?? ?? ?? ?? 48 8B F8 E8 ?? ?? ?? ?? 84 C0 75 0F", 0x3)
     };
 
     //Version check if needed in future to change signatures
@@ -116,6 +117,8 @@ init
 
     vars.onSaStatusUpdateOff = gameAddresses["onSaStatusUpdate"];
     vars.onKillEventObjectListOff = gameAddresses["onKillEventObjectList"];
+    vars.contractsEventEntityList = gameAddresses["contractsEventEntityList"];
+    vars.onExitGateEventPointer = (ulong)0;
 
     vars.silentAssassinStatus = false;
 }
@@ -164,11 +167,56 @@ update
         break;
     }
 
+    vars.canDoSplit = false;
     vars.time.Update(game);
     vars.hudMissionTimeController.Update(game);
     vars.missionTime.Update(game);
     vars.gateExited.Update(game);
     vars.metadataLocation.Update(game);
+
+    //Find new exitgate event class when mission start
+    //
+    if (vars.missionTime.Old != vars.missionTime.Current && vars.missionTime.Current > 0)
+    {
+        var eventListPointer = IntPtr.Add(baseAddress, (int)vars.contractsEventEntityList);
+        var eventListHeaderData = game.ReadBytes(eventListPointer, 0x10);
+
+        var eventListStart = BitConverter.ToUInt64(eventListHeaderData, 0x0);
+        var eventListEnd = BitConverter.ToUInt64(eventListHeaderData, 0x8);
+
+        var eventListData = game.ReadBytes((IntPtr)eventListStart, (int)(eventListEnd - eventListStart));
+
+        for (var i = 0; i < eventListData.Length; i += 0x8)
+        {
+            var currentEventPointer = BitConverter.ToUInt64(eventListData, i);
+            if (currentEventPointer == 0)
+                continue;
+
+            var eventTriggerNamePointer = game.ReadValue<ulong>(IntPtr.Add((IntPtr)currentEventPointer, 0x40));
+            if (eventTriggerNamePointer == 0)
+                continue;
+
+            var sb = new StringBuilder(64);
+
+            if (game.ReadString((IntPtr)eventTriggerNamePointer, ReadStringType.AutoDetect, sb))
+            {
+                if (sb.ToString() == "exit_gate")
+                {
+                    vars.onExitGateEventPointer = currentEventPointer;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (vars.onExitGateEventPointer > 0)
+    {
+        vars.currentExitTime = game.ReadValue<ulong>(IntPtr.Add((IntPtr)vars.onExitGateEventPointer, 0x50));
+        if (vars.currentExitTime > 0)
+        {
+            vars.onExitGateEventPointer = 0;
+        }
+    }
 
     if (settings["unsplitrestart"] && vars.hudMissionTimeController.Current > 0 && vars.missionTime.Current == 0 && vars.lastSplitLocation == vars.metadataLocation.Current)
     {
@@ -180,6 +228,8 @@ update
 startup
 {
     vars.totalIGT = (ulong)0;
+    vars.currentMissionTime = (ulong)0;
+    vars.currentExitTime = (ulong)0;
     vars.disableReset = true;
     vars.timerModel = new TimerModel { CurrentState = timer }; // to use the undo split function
     vars.lastSplitLocation = "";
@@ -268,6 +318,7 @@ start
             {
                 if (settings[settingKey])
                 {
+                    vars.currentMissionTime = (ulong)0;
                     vars.totalIGT = (ulong)0;
                     return true;
                 }
@@ -278,6 +329,7 @@ start
     {
         if (vars.totalIGT > 0)
         {
+            vars.currentMissionTime = (ulong)0;
             vars.totalIGT = (ulong)0;
         }
     }
@@ -320,36 +372,53 @@ isLoading
 
 gameTime
 {
-    if (vars.time.Current > vars.time.Old && vars.missionTime.Current > 0
-        && vars.time.Old >= vars.missionTime.Current
-        && vars.gateExited.Current == false)
+    if (vars.hudMissionTimeController.Current > 0
+        && vars.missionTime.Current > 0
+        && vars.time.Current > vars.missionTime.Current)
     {
-        vars.totalIGT += vars.time.Current - vars.time.Old;
+        if (vars.gateExited.Current == false)
+            vars.currentMissionTime = vars.time.Current - vars.missionTime.Current;
+        else if (vars.currentExitTime > 0)
+        {
+            vars.currentMissionTime = vars.currentExitTime - vars.missionTime.Current;
+            vars.currentExitTime = (ulong)0;
+        }
     }
 
-    if (settings["useseconds"])
+    //Check if we restart/exit mission
+    //
+    if (vars.currentMissionTime > 0)
     {
-        //Fix timer to seconds only
-        //
-        if ((vars.gateExited.Old == false && vars.gateExited.Current == true) ||
+        if ((vars.currentMissionTime > 0 && vars.gateExited.Current == true) ||
             (vars.missionTime.Current == 0 && vars.hudMissionTimeController.Current > 0))
         {
-            //We use bit operation to convert it to seconds, it sets first 20 bits to 0
-            //
-            vars.totalIGT &= ~((ulong)0xFFFFF);
+            if (settings["useseconds"])
+            {
+                //We use bit operation to convert it to seconds, it sets first 20 bits to 0
+                //
+                vars.currentMissionTime &= ~((ulong)0xFFFFF);
+            }
+
+            if (vars.gateExited.Current)
+            {
+                vars.canDoSplit = true;
+            }
+
+            vars.totalIGT += vars.currentMissionTime;
+            vars.currentMissionTime = (ulong)0;
         }
     }
 
     //We have to convert microseconds to seconds since it's binary format we have to use 2^-20 (0.00000095367432) // decimal 10^-6, 1000000μs is 1s
     //
-    return TimeSpan.FromSeconds((double)vars.totalIGT * 0.00000095367432);
+    return TimeSpan.FromSeconds((double)(vars.totalIGT + vars.currentMissionTime) * 0.00000095367432);
 }
 
 split
 {
     //Split when exited mission
     //
-    if (settings.SplitEnabled && (!settings["splitassassin"] || vars.silentAssassinStatus) && vars.hudMissionTimeController.Current > 0 && vars.gateExited.Old == false && vars.gateExited.Current == true)
+    if (settings.SplitEnabled && (!settings["splitassassin"] || vars.silentAssassinStatus) && vars.hudMissionTimeController.Current > 0 && vars.canDoSplit)
     {
         vars.lastSplitLocation = vars.metadataLocation.Current;
         return true;
